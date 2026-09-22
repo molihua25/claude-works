@@ -6,6 +6,36 @@
 > ⚠️ = 未装、需另行安装，标注了替代方案。**给用户报命令前先确认对应工具在不在**，
 > 不要报一个跑不起来的命令然后让用户自己发现。
 
+---
+
+## ⚠️ 三条实测踩出来的硬规则（不遵守命令会"卡死"或"静默无结果"）
+
+### 1. ProjectDiscovery 全家桶必须加 `-duc`
+
+`subfinder` / `httpx` / `nuclei` / `katana` / `dnsx` / `naabu` / `alterx` / `notify` /
+`interactsh-client` 启动时都会**联网做版本检查**。本机国际出口受限，它们会**直接吊死**——
+不发任何请求、不打任何日志，看着像在跑，其实永远跑不完。
+
+```
+实测：httpx 不加 -duc  → 180 秒零输出、零请求（靶标根本没收到包）
+      httpx 加   -duc  → 3.3 ms 正常返回
+```
+
+**下文所有 PD 工具的命令都已经带上 `-duc`，不要图省事删掉。**
+
+### 2. nuclei 会静默跳过一批模板
+
+nuclei 默认按 `.nuclei-ignore` 排除"匹配器太弱"的模板，**只在 `-v` 下打一行
+`Excluded N template[s] with known weak matchers`**。实测
+`http/miscellaneous/directory-listing.yaml` 就被静默排除了，扫完报"No results found"，
+很容易误判成"目标没问题"。
+
+需要跑这些模板时，先 `-v` 看排除提示，或用 `-it` 显式包含。
+
+### 3. katana 的 `-silent` 和 `-o` 别一起用
+
+实测同时使用会导致**输出文件为空**（不是没爬，是写不进去）。要落盘就不要加 `-silent`。
+
 建议工作目录结构：
 
 ```
@@ -39,11 +69,11 @@ mkdir -p work/<项目名> && cd work/<项目名>
 
 ```bash
 # 被动枚举（快，无侵入）
-subfinder -dL 00-scope.txt -all -silent -o 01-subs-raw.txt          # ✅
+subfinder -dL 00-scope.txt -all -duc -silent -o 01-subs-raw.txt     # ✅
 
 # 解析 + 泛解析过滤 —— 必做
 # 一个域名一次 -wd，多个域名就重复传多个 -wd
-dnsx -l 01-subs-raw.txt -wd example.com -a -resp -silent -o 01-subs.txt   # ✅
+dnsx -l 01-subs-raw.txt -wd example.com -a -resp -duc -silent -o 01-subs.txt   # ✅
 sort -u 01-subs.txt -o 01-subs.txt
 ```
 
@@ -66,7 +96,7 @@ sort -u 01-subs.txt -o 01-subs.txt
 httpx -l 01-subs.txt \
   -title -tech-detect -status-code -web-server \
   -favicon -jarm -cname \
-  -threads 50 -rate-limit 150 \
+  -threads 50 -rate-limit 150 -duc \
   -json -o 02-alive.jsonl                                            # ✅
 ```
 
@@ -103,7 +133,8 @@ gau --threads 5 < 00-scope.txt > 04-urls-history.txt            # ✅
 waybackurls < 00-scope.txt >> 04-urls-history.txt               # ✅
 
 # 主动爬取（能翻出 JS 里的接口）
-katana -list 02-alive.txt -jc -kf all -d 3 -jsonl -o 04-urls-crawl.jsonl   # ✅
+# 注意：不要加 -silent，会和 -o 冲突导致输出为空（见上文硬规则 3）
+katana -list 02-alive.txt -jc -kf all -d 3 -duc -jsonl -o 04-urls-crawl.jsonl   # ✅
 
 # 合并去重
 cat 04-urls-history.txt | anew >> 04-urls.txt                   # ✅
@@ -117,14 +148,24 @@ cat 04-urls-history.txt | anew >> 04-urls.txt                   # ✅
 
 ```bash
 # 起反连平台（盲注/SSRF/Log4j 全靠它）
-interactsh-client -v -o 05-interactsh.txt &                     # ✅
+interactsh-client -duc -v -o 05-interactsh.txt &                # ✅ 但见下方警告
 
 # nuclei 主扫
 nuclei -l 02-alive.txt \
   -t http/ -t cves/ -t exposures/ -t misconfiguration/ \
   -severity medium,high,critical \
   -rate-limit 100 -bulk-size 25 -concurrency 20 \
-  -stats -jsonl -o 05-nuclei.jsonl                              # ✅
+  -duc -stats -jsonl -o 05-nuclei.jsonl                         # ✅
+```
+
+**⚠️ `interactsh-client` 本机大概率连不上**：它要连官方 `interactsh` 服务器
+（境外），本机国际出口受限。**上机前先确认它能取到域名**，取不到就别指望 OOB 类漏洞
+（盲注/SSRF/Log4j）。替代方案见 `field-notes.md`。
+
+**⚠️ 零命中时先别下结论**：nuclei 会静默排除一批"弱匹配器"模板（见上文硬规则 2），
+加 `-v` 确认是不是模板压根没加载。
+
+```bash
 
 # afrog 补刀 —— 国产组件/中文漏洞覆盖比 nuclei 好，两个都跑
 afrog -T 02-alive.txt -o 05-afrog.txt                           # ✅
