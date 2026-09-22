@@ -159,6 +159,75 @@
   ① `Content-Type` 是不是 HTML；② 有没有 `nosniff`；③ **前端有没有把返回值塞进 DOM**。
   三条缺一，写出去就是无效报告，还掉信誉分。本例只值一条"加固建议"。
 
+### CORS 检测 —— `*`+credentials 是**假的**，反射才是真的
+
+- **日期**：2026-09-22
+- **环境**：`oa.hainanu.edu.cn` 与 `ehall.hainanu.edu.cn` 对照实测
+- **现象**：两个主机都返回"看起来有问题"的 CORS 头，但**性质完全相反**：
+
+  | 主机 | `Allow-Origin` | `Allow-Credentials` | 能否利用 |
+  |---|---|---|---|
+  | ehall `/gsapp/` | **反射请求的任意 Origin** | `true` | ✅ **能** |
+  | oa `/seeyon/rest/` | `*` | `true` | ❌ **不能** |
+
+- **为什么 `*` + credentials 打不了**：**CORS 规范明文禁止**这个组合，
+  浏览器拿到 `*` 就直接拒绝暴露响应，凭据也不发。**它是配置瑕疵，不是漏洞。**
+  很多扫描器会把它报成漏洞——**那是误报，别跟着报**。
+- **怎么判真伪**：发 `Origin: https://evil-attacker.example.com`，看回显：
+  - 回显成 **`evil-attacker.example.com`（原样反射）** → 真问题
+  - 回显成 **`*`** → 打不了
+  - 再补一个 `Origin: null`（沙箱 iframe / `data:` URL 的 Origin）——
+    连 `null` 都反射，说明**根本没有任何白名单逻辑**
+- **附**：**302 响应也反射**说明错误配在网关层（本例是 openresty），不是某个应用里，
+  影响面通常覆盖整站。**这条是判断影响范围的好线索。**
+
+### 致远 OA（Seeyon）—— 经典 RCE 端点全 404 = 已修补
+
+- **日期**：2026-09-22
+- **环境**：`oa.hainanu.edu.cn`（致远 A8，接入 CAS 单点登录）
+- **指纹**：根路径 302 → `/seeyon/index.jsp` → 再跳 `/seeyon/casSSOController.do?method=casSsoLogin`；
+  页面出现 "A8C验证码"
+- **实测（纯 GET 查存在性）**：
+
+  | 端点 | 结果 |
+  |---|---|
+  | `/seeyon/htmlofficeservlet` | **404** ← 经典任意文件上传 |
+  | `/seeyon/wpsAssistServlet` | **404** |
+  | `/seeyon/autoinstall.do.css` | **404** |
+  | `/seeyon/management/status.jsp` | **404** |
+  | `/seeyon/rest/` | 401 `{"code":"1010"}`（通用会话失效，非鉴权绕过） |
+
+- **对策**：**这几个一 404，说明该打的补丁都打了，别再按老 POC 试**。
+  剩下的路只有"有凭据进业务"或"找新洞"，**继续盲试只是浪费时间**。
+- **纪律**：这些端点的历史漏洞**都是文件上传/RCE，验证 payload 是有破坏性的**。
+  本次只做 HTTP 状态码存在性判断，**没发任何上传或注入 payload**——授权不等于可以打破坏性请求。
+
+### 金智教育 EMAP / 统一身份认证 —— ehall 的技术栈
+
+- **日期**：2026-09-22
+- **环境**：`ehall.hainanu.edu.cn`（IP `210.37.41.178`，与 www/oa 不同段）
+- **指纹**：
+  - `/gsapp/` 返回 `Welcome come to EMAP.` ← **EMAP 是金智的应用平台**
+  - 响应头 `Server: openresty` + `Set-Cookie: route=<hex>`（后端负载均衡）
+  - 其余路径 302 到 `authserver.hainanu.edu.cn/authserver/login?service=...`
+  - 两个 404 基线**不同**：`/gsapp/*` 约 2400B，其他路径 599B
+- **路径含义**：`gsapp`=研究生应用、`xsfw`=学生服务、`publicapp`=公共应用
+- **对策**：EMAP 的业务接口在 `/gsapp/sys/<appId>/...`，**appId 得从 JS 或页面里挖，猜不中**。
+
+### nuclei 的 `New templates added: N` 不是"你缺 N 个模板"
+
+- **日期**：2026-09-22
+- **环境**：本机，nuclei v3.11.1，`-duc` 常开
+- **现象**：扫描时输出 `New templates added in latest release: 123`，
+  第一反应是"模板库落后了 123 个"。**实际不是**——单独跑
+  `nuclei -update-templates` 返回 `No new updates found for nuclei templates`（退出码 0），
+  **本地模板是最新的**。那行只是"最新发布版总共新增了多少"的版本信息。
+- **对策**：
+  - **别把这行当成"本地过期"的告警**，更别因此判定扫描覆盖不全。
+  - 真想知道模板新不新，跑 `nuclei -update-templates` 看返回，**这条命令不需要也不该加 `-duc`**，
+    实测能通（本机国际出口受限的情况下仍可用，说明它走的是可达的源）。
+  - `-duc` 依然必须常开——不加会吊死（见上文硬规则 1）。**两者不冲突。**
+
 ---
 
 ## 验证记录
