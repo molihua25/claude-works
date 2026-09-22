@@ -90,6 +90,75 @@
 - **延伸**：高校资产要多想一层归属——附属医院、独立法人公司、科技园这类
   **可能是独立主体**，扫了容易判"误归属"。
 
+### 西安博达网站群 CMS（Bodasoft）—— 国内高校最常见，指纹好认
+
+- **日期**：2026-09-22
+- **环境**：`www.hainanu.edu.cn` 实测
+- **指纹**（见到任意一条基本可定钉）：
+  - 附件路径 `/__local/<x>/<xx>/<xxx>/<hash>.jpg` —— **最独特**
+  - `/system/resource/vue/static/element/index.css`（Vue + Element UI 前端）
+  - `_sitegray/_sitegray_d.css`
+  - 栏目/文章 URL 形如 `/hdxw/ttxw.htm`、`/info/1043/673041.htm`
+- **已知接口**（从前端 JS 里挖出来的，不是猜的）：
+  - `/system/resource/code/news/click/dynclicks.jsp?clickid=&owner=&clicktype=`
+  - `/system/resource/code/news/click/dynclicksbatch.jsp?clickids=&owner=&clicktype=`
+  - `/system/resource/code/news/click/addclicktimes.jsp?wburlid=&owner=&type=`
+  - `/system/resource/getToken.jsp?mode=` / `getSession.jsp` / `sensitiveFilter.jsp`
+- **后台入口是 `/system/`**，实测返回"您需要登录后才可访问系统"——**有鉴权，别指望裸奔**
+- **对策**：**先从首页 HTML 里 grep `/system/` 挖接口**，比盲扫目录高效得多。
+  不要浪费时间爆破 `/wcm/`（那是别的 CMS 的路径）。
+
+### 反向代理的三种响应码 —— 用它区分"真不存在"和"被拦"
+
+- **日期**：2026-09-22
+- **环境**：`www.hainanu.edu.cn`（前置 `wrdproxy.hainanu.edu.cn`）
+- **现象**：同一站点出现**三种完全不同的错误页**，字节数各不相同：
+
+  | 响应 | 大小 | 含义 |
+  |---|---|---|
+  | 404 | **4689B** 固定 | 路径真的不存在（**可作过滤基线**） |
+  | 502 | 5088B | **代理主动拦截**——`.DS_Store` / `.svn/entries` / `*.zip` 全走这个 |
+  | 403 | 1693B | **WAF 内容检查拦截**——POST body 内容可疑时触发 |
+
+- **对策**：
+  1. **开工先校准 404 基线**（请求一个随机路径，记下 `code:size`）。
+     之后**凡是不等于这个 size 的响应都值得看**。本例中靠这条一次就捞出了
+     `/system/`（912B）和 `sensitiveFilter.jsp`（10B）。
+  2. **502 ≠ 文件不存在**，是代理在挡。别当成"路径存在"的线索追下去。
+  3. **403 出现说明 WAF 在看请求体**——完整业务 JSON 被拦、空 `{}` 放行，是典型特征。
+
+### webber 搜索 API —— 匿名令牌就是 `tourist`，但管理接口不吐数据
+
+- **日期**：2026-09-22
+- **环境**：`www.hainanu.edu.cn`，博达站群外挂的搜索系统
+- **现象**：
+  - 网关前缀 `/aop_component`，直接访问 `/webber/...` 会 404（**没有前缀就是 404**）
+  - `/aop_component/webber/search/test` 无头 → `401 {"msg":"token不存在"}`
+  - **鉴权就是 `Authorization` 头，匿名值字面量 `tourist`**
+    （前端 JS 写死 `token = params['token'] || 'tourist'`）
+  - 带上后 `test` → `200 {"code":"0000","msg":"成功"}`
+  - 接口集：`search/search/{queryPage,suggest,clickUrl,clickButton}` +
+    `search/manage/{indexTemplate/list,show/list,showHot/list,configTemplate/owner,statistics/topSearch}`
+- **关键结论**：**5 个 `manage/` 接口返回 200 但 `Content-Length: 0`，不吐任何数据**。
+  路由活着（会返回"method not supported"而不是 404），但**没有数据泄露**。
+  匿名搜索本身是设计如此，**不构成漏洞**。
+- **对策**：遇到这套 API，**先拿 `tourist` 打通再谈别的**；但**别把"接口可达"当成"越权"**，
+  要实际拿到不该拿的数据才算。这条线索到这里就断了，别反复试。
+
+### sensitiveFilter.jsp —— 回显完全不编码，但被 Content-Type 挡住
+
+- **日期**：2026-09-22
+- **环境**：`www.hainanu.edu.cn/system/resource/sensitiveFilter.jsp`
+- **现象**：POST `content=probe"<'><b>PROBE123</b>` →
+  **原样返回** `probe"< '><b>PROBE123</b>`，**一个字符都没转义**。
+  但响应头是 **`Content-Type: image/jpeg`** —— 浏览器不会当 HTML 渲染。
+  且该响应**独独缺少 `X-Content-Type-Options: nosniff`**（同站其他接口都有）。
+- **结论**：**不是可提交的 XSS**。content-type 把直接利用堵死了，
+  前端那个 `filterSensitiveWords()` 函数在主站/文章页**都没有被调用**。
+- **对策**：**别看到"未编码回显"就写 XSS 报告**——先看三件事：
+  ① `Content-Type` 是不是 HTML；② 有没有 `nosniff`；③ **前端有没有把返回值塞进 DOM**。
+  三条缺一，写出去就是无效报告，还掉信誉分。本例只值一条"加固建议"。
+
 ---
 
 ## 验证记录
@@ -131,3 +200,17 @@
 - `dnsx -wd` 泛解析过滤 —— 没在真实通配域名上验证过
 - `interactsh-client` —— 反连平台未验证（需要能连到官方 interactsh 服务器，
   本机国际出口受限，**很可能连不上**，这是个高风险项）
+
+### 单目标 + SPA + WAF 时，流水线要换打法（2026-09-22 实测得出）
+
+`www.hainanu.edu.cn` 是**单主机、Vue SPA、前置 WAF**，常规七层流水线大部分用不上：
+
+| 段 | 为什么跳过 |
+|---|---|
+| 子域枚举（subfinder/dnsx） | 范围只有一台主机，做了就是越界 |
+| 爬虫（katana/gau/waybackurls） | SPA 的 HTML 里没有链接，**gau 只回 3 条、wayback 0 条** |
+| 目录爆破（ffuf/dirsearch） | 单站可以，但**先校准 404 基线**；WAF 会拦 |
+
+**这种目标上真正有效的是手工读 JS**——本次全部有价值的线索
+（6 个 CMS 接口、搜索 API 全套、匿名令牌 `tourist`）**都是从 JS 里读出来的**，一条都不是扫出来的。
+**教训：拿到 SPA 先抓 JS 读，别急着上扫描器。**
