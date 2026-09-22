@@ -6,6 +6,7 @@
 |---|---|
 | [etf-strategy-v5-2](etf-strategy-v5-2/SKILL.md) | V5-2 累计回撤驱动 ETF 量化波段策略(含 1000 元应急备用金)完整规则库与维护口径 |
 | [paper-deep-read](paper-deep-read/SKILL.md) | 精读文献:输入论文(PDF/docx),按八段式模板生成深度精读报告 |
+| [vuln-hunting](vuln-hunting/SKILL.md) | 授权众测/挖漏洞作战手册:授权门禁 + 自动保鲜的 GitHub 工具目录 + 七层流水线 + 补天/漏洞盒子平台规则 |
 
 ## 使用方式
 
